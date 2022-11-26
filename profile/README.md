@@ -1,1 +1,3 @@
-Welcome to IOMETE Data Platform!
+👋 Welcome to IOMETE - The Modern Data Stack Platform.
+
+![IOMETE Modern Data Stack](Github.png)
