@@ -1,3 +1,3 @@
-👋 Welcome to IOMETE - We provide Fully-Managed Modern Data Stack.
+👋 Welcome to IOMETE - The first cloud-prem data lakehouse.
 
 ![IOMETE Modern Data Stack](Github.png)
