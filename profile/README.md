@@ -1,3 +1,3 @@
-👋 Welcome to IOMETE - The first cloud-prem data lakehouse.
+👋 Welcome to IOMETE - The Self-Hosted Data Lakehouse Platform
 
 ![IOMETE Modern Data Stack](Github.png)
