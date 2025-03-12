@@ -1,3 +1,3 @@
-👋 Welcome to IOMETE - The Self-Hosted Data Lakehouse Platform
+👋 Welcome to IOMETE - The self-hosted data lakehouse platform for the age of AI.
 
-![IOMETE Modern Data Stack](github-brand.png)
+![IOMETE Modern Data Stack](iomete-banner-center.png)
