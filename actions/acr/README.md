@@ -2,7 +2,7 @@
 
 Shared steps for Azure Container Registry, usable from public and private repos in
 the org. They take the registry, repository and tag as inputs and hold no
-environment-specific values, so callers pass their own through variables or secrets.
+environment-specific values, so callers pass their own through their own secrets and variables.
 
 ## mark-tag-immutable
 
@@ -14,7 +14,7 @@ retries, and fails the job when the lock does not hold.
 ```yaml
 - uses: iomete/.github/actions/acr/mark-tag-immutable@main
   with:
-    acr_name: ${{ vars.ACR_NAME }}
+    acr_name: ${{ secrets.ACR_NAME }}
     repository: ${{ vars.ACR_NAMESPACE }}/my-image
     tag: 1.2.3
 ```
