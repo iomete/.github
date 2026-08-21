@@ -13,7 +13,5 @@ Lead with the outcome, then the how. Skip anything a reviewer can read off the d
 <!--
 What a customer would notice, in their words: support and customer success paste this straight
 into a ticket or release note. Strictly non-technical, no file paths, commands, service names,
-or flags. If nothing changes for customers, leave the line below as-is.
+or flags. If nothing changes for customers, write: None (internal only).
 -->
-
-None (internal only).
