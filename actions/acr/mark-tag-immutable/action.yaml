@@ -1,0 +1,77 @@
+name: "ACR: Mark Tag Immutable"
+description: "Marks existing image tags as immutable and verifies the locks stuck"
+inputs:
+  acr_name:
+    description: "Name of the Azure Container Registry (without domain)"
+    required: true
+  repository:
+    description: "Repository name, e.g. 'myorg/myimage'. Space-separated for several."
+    required: true
+  tag:
+    description: "The tag to make immutable. Space-separated for several."
+    required: true
+  lock_delete:
+    description: "Also lock deletion. Leave false for disposable candidate tags."
+    required: false
+    default: "true"
+  settle_seconds:
+    description: "Wait before the first lock attempt, so a just-pushed tag has settled."
+    required: false
+    default: "30"
+  attempts:
+    description: "How many times to lock and re-check one tag before failing."
+    required: false
+    default: "5"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Mark ACR images immutable
+      shell: bash
+      env:
+        ACR_NAME: ${{ inputs.acr_name }}
+        REPOSITORIES: ${{ inputs.repository }}
+        TAGS: ${{ inputs.tag }}
+        LOCK_DELETE: ${{ inputs.lock_delete }}
+        SETTLE_SECONDS: ${{ inputs.settle_seconds }}
+        ATTEMPTS: ${{ inputs.attempts }}
+      run: |
+        set -euo pipefail
+
+        flags="--write-enabled false"
+        if [ "$LOCK_DELETE" = "true" ]; then
+          flags="$flags --delete-enabled false"
+        fi
+
+        # ACR can rewrite tag metadata for a few seconds after a push, which silently
+        # drops a lock applied in that window. Settle first, then read the attribute
+        # back instead of trusting the update call's own output.
+        echo "🔁 Settling ${SETTLE_SECONDS}s before locking"
+        sleep "$SETTLE_SECONDS"
+
+        lock() {
+          image=$1
+          for i in $(seq 1 "$ATTEMPTS"); do
+            # shellcheck disable=SC2086
+            az acr repository update --name "$ACR_NAME" --image "$image" $flags -o none
+            sleep 10
+            write=$(az acr repository show --name "$ACR_NAME" --image "$image" \
+              --query changeableAttributes.writeEnabled -o tsv)
+            delete=$(az acr repository show --name "$ACR_NAME" --image "$image" \
+              --query changeableAttributes.deleteEnabled -o tsv)
+            if [ "$write" = "false" ] && { [ "$LOCK_DELETE" != "true" ] || [ "$delete" = "false" ]; }; then
+              echo "✅ $image locked (writeEnabled=$write, deleteEnabled=$delete) on attempt $i"
+              return 0
+            fi
+            echo "$image not locked on attempt $i (writeEnabled=$write, deleteEnabled=$delete), retrying"
+            sleep 10
+          done
+          echo "::error::lock did not stick on $image after $ATTEMPTS attempts"
+          return 1
+        }
+
+        for repository in $REPOSITORIES; do
+          for tag in $TAGS; do
+            lock "${repository}:${tag}"
+          done
+        done
