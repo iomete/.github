@@ -1,0 +1,66 @@
+name: org-branch-cleanup
+
+# Org-wide branch hygiene, run from the org .github repo:
+#   1. ensure the native "delete head branch on merge" setting is on for every
+#      active repo (covers MERGED PRs instantly + onboards new repos), then
+#   2. delete head branches whose PRs are now CLOSED or MERGED (the gap GitHub
+#      does not cover natively), with safety guards and a dry-run default.
+#
+# Cross-repo writes use the BRANCH_CLEANUP_TOKEN secret (the default GITHUB_TOKEN
+# cannot act on other repos). See docs/branch-cleanup-policy.md for setup.
+
+on:
+  schedule:
+    - cron: "0 3 * * *"        # 03:00 UTC nightly
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (true = log only, delete nothing)"
+        type: boolean
+        default: true
+      grace_days:
+        description: "Spare branches whose tip commit is newer than N days"
+        default: "7"
+      lookback_days:
+        description: "Only consider PRs closed within N days"
+        default: "90"
+
+permissions:
+  contents: read              # enumeration only; real writes use BRANCH_CLEANUP_TOKEN
+
+concurrency:
+  group: org-branch-cleanup
+  cancel-in-progress: false
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    env:
+      ORG: iomete
+      GH_TOKEN: ${{ secrets.BRANCH_CLEANUP_TOKEN }}
+      GRACE_DAYS: ${{ inputs.grace_days || '7' }}
+      LOOKBACK_DAYS: ${{ inputs.lookback_days || '90' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: No token configured
+        if: ${{ env.GH_TOKEN == '' }}
+        run: echo "::warning::BRANCH_CLEANUP_TOKEN is not set — skipping. See docs/branch-cleanup-policy.md"
+
+      # Resolve DRY_RUN safely (the `&&/||` ternary mis-handles a false input):
+      #  - manual run  -> the dry_run input ('true'/'false')
+      #  - scheduled   -> repo variable BRANCH_CLEANUP_DRY_RUN, default 'true'
+      - name: Resolve dry-run mode
+        if: ${{ env.GH_TOKEN != '' }}
+        env:
+          DISPATCH_DRY_RUN: ${{ inputs.dry_run }}
+          DEFAULT_DRY_RUN: ${{ vars.BRANCH_CLEANUP_DRY_RUN || 'true' }}
+        run: echo "DRY_RUN=${DISPATCH_DRY_RUN:-$DEFAULT_DRY_RUN}" >> "$GITHUB_ENV"
+
+      - name: Ensure delete-branch-on-merge on all active repos
+        if: ${{ env.GH_TOKEN != '' }}
+        run: bash scripts/enforce-delete-on-merge.sh
+
+      - name: Delete stale branches from closed/merged PRs
+        if: ${{ env.GH_TOKEN != '' }}
+        run: bash scripts/delete-stale-branches.sh
