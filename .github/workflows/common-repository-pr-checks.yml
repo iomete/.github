@@ -1,0 +1,40 @@
+name: Common repository PR checks
+
+# Checks every repo in the org should run on a pull request. Call it from a repo
+# with `secrets: inherit` so the org secrets these checks need come through.
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: Runner for the jobs. Public repos must pass ubuntu-latest, the self-hosted runners are private-repo only.
+        type: string
+        default: iomete-github-runners
+      gitleaks-config:
+        description: Path to a gitleaks config in the calling repo, for a repo-specific allowlist.
+        type: string
+        default: ""
+    secrets:
+      GITLEAKS_LICENSE:
+        description: Free organization license for gitleaks-action, obtained at gitleaks.io.
+        required: false
+
+jobs:
+  gitleaks:
+    name: Secret scan
+    runs-on: ${{ inputs.runs-on }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      # On a pull request the action scans that PR's commits, so findings
+      # already in history do not fail unrelated work.
+      - name: Gitleaks
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          GITLEAKS_CONFIG: ${{ inputs.gitleaks-config }}
