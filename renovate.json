@@ -4,10 +4,20 @@
     "config:recommended",
     "helpers:pinGitHubActionDigests"
   ],
-  "docker": {
-    "pinDigests": true
-  },
   "labels": ["dependencies", "renovate"],
+  "packageRules": [
+    {
+      "description": "Pin container images to a digest, so what runs cannot change under a tag.",
+      "matchCategories": ["docker"],
+      "pinDigests": true
+    },
+    {
+      "description": "Shared org workflows track main on purpose, so a fix reaches every repo without a bump in each one. Leave them unpinned.",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["iomete/**"],
+      "pinDigests": false
+    }
+  ],
   "customManagers": [
     {
       "customType": "regex",
