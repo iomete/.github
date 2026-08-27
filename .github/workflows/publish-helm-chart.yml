@@ -1,0 +1,112 @@
+name: Publish Helm chart
+
+# Packages a chart, scans the package for secrets, and uploads it to ChartMuseum
+# when that version is not published yet.
+
+on:
+  workflow_call:
+    inputs:
+      chart-path:
+        description: Path to the chart directory in the calling repo.
+        type: string
+        required: true
+      chart-name:
+        description: Chart name, as ChartMuseum knows it.
+        type: string
+        required: true
+      chartmuseum-url:
+        description: ChartMuseum base URL.
+        type: string
+        default: https://chartmuseum.iomete.com
+      helm-version:
+        description: Helm release to install.
+        type: string
+        default: v4.2.4
+      runs-on:
+        description: Runner for the job. Public repos must pass ubuntu-latest, the self-hosted runners are private-repo only.
+        type: string
+        default: ubuntu-latest
+    secrets:
+      CHARTMUSEUM_USER:
+        required: true
+      CHARTMUSEUM_PASS:
+        required: true
+
+jobs:
+  publish:
+    name: Publish ${{ inputs.chart-name }}
+    runs-on: ${{ inputs.runs-on }}
+
+    env:
+      # Digest-pinned so what runs cannot change under us. Renovate keeps it current.
+      GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Install Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: ${{ inputs.helm-version }}
+
+      # Republishing an existing version is a no-op in ChartMuseum, so skip it
+      # rather than fail the run.
+      - name: Check Whether This Version Is Published
+        id: check
+        env:
+          CHART_PATH: ${{ inputs.chart-path }}
+          CHART_NAME: ${{ inputs.chart-name }}
+          CHARTMUSEUM_URL: ${{ inputs.chartmuseum-url }}
+        run: |
+          set -euo pipefail
+          version=$(grep '^version:' "$CHART_PATH/Chart.yaml" | awk '{print $2}')
+          echo "Local version: $version"
+
+          published=$(curl -sf "$CHARTMUSEUM_URL/api/charts/$CHART_NAME" | jq -r '.[].version' || echo "")
+          if echo "$published" | grep -qx "$version"; then
+            echo "Version $version is already published."
+            echo "should_publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Package Chart
+        if: steps.check.outputs.should_publish == 'true'
+        env:
+          CHART_PATH: ${{ inputs.chart-path }}
+        run: |
+          set -euo pipefail
+          cd "$CHART_PATH"
+          helm package .
+          echo "PACKAGE_FILE=$(ls *.tgz)" >> "$GITHUB_ENV"
+
+      # ChartMuseum serves these packages publicly, so scan what is about to be
+      # uploaded rather than only what is in the repo. No network and a
+      # read-only mount: the scanner reads the package and nothing else.
+      - name: Scan Packaged Chart for Secrets
+        if: steps.check.outputs.should_publish == 'true'
+        env:
+          CHART_PATH: ${{ inputs.chart-path }}
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/chart-scan
+          tar -xzf "$CHART_PATH/$PACKAGE_FILE" -C /tmp/chart-scan
+          docker run --rm --network none --read-only --tmpfs /tmp \
+            -v /tmp/chart-scan:/scan:ro \
+            "$GITLEAKS_IMAGE" \
+            dir /scan --redact --verbose --no-banner
+
+      - name: Publish to ChartMuseum
+        if: steps.check.outputs.should_publish == 'true'
+        env:
+          CHART_PATH: ${{ inputs.chart-path }}
+          CHARTMUSEUM_URL: ${{ inputs.chartmuseum-url }}
+          CHARTMUSEUM_USER: ${{ secrets.CHARTMUSEUM_USER }}
+          CHARTMUSEUM_PASS: ${{ secrets.CHARTMUSEUM_PASS }}
+        run: |
+          set -euo pipefail
+          cd "$CHART_PATH"
+          curl -sSf -u "$CHARTMUSEUM_USER:$CHARTMUSEUM_PASS" \
+            -F "chart=@${PACKAGE_FILE}" \
+            "$CHARTMUSEUM_URL/api/charts"
