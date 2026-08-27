@@ -1,0 +1,53 @@
+name: Common repository PR checks
+
+# Checks every repo in the org should run on a pull request.
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        description: Runner for the jobs. Public repos must pass ubuntu-latest, the self-hosted runners are private-repo only.
+        type: string
+        default: iomete-github-runners
+      gitleaks-args:
+        description: Extra arguments for the secret scan, such as --config for a repo-specific allowlist.
+        type: string
+        default: ""
+
+jobs:
+  gitleaks:
+    name: Secret scan
+    runs-on: ${{ inputs.runs-on }}
+
+    env:
+      # Digest-pinned so what runs cannot change under us. Renovate keeps it current.
+      GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      # Scan only the commits this change adds, so findings already in history do
+      # not fail every unrelated PR.
+      - name: Resolve commit range
+        id: range
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          echo "log_opts=$BASE_SHA..$HEAD_SHA" >> "$GITHUB_OUTPUT"
+
+      # No network and a read-only mount: the scanner reads the code and nothing else.
+      - name: Gitleaks
+        env:
+          LOG_OPTS: ${{ steps.range.outputs.log_opts }}
+          EXTRA_ARGS: ${{ inputs.gitleaks-args }}
+        run: |
+          set -euo pipefail
+          docker run --rm --network none --read-only --tmpfs /tmp \
+            -v "$GITHUB_WORKSPACE:/repo:ro" \
+            "$GITLEAKS_IMAGE" \
+            git /repo --redact --verbose --no-banner --log-opts "$LOG_OPTS" $EXTRA_ARGS

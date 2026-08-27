@@ -1,0 +1,32 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "labels": ["dependencies", "renovate"],
+  "packageRules": [
+    {
+      "description": "Pin container images to a digest, so what runs cannot change under a tag.",
+      "matchCategories": ["docker"],
+      "pinDigests": true
+    },
+    {
+      "description": "Shared org workflows track main on purpose, so a fix reaches every repo without a bump in each one. Leave them unpinned.",
+      "matchManagers": ["github-actions"],
+      "matchPackageNames": ["iomete/**"],
+      "pinDigests": false
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track the gitleaks image pinned in the shared PR checks workflow",
+      "managerFilePatterns": ["/^\\.github/workflows/.+\\.ya?ml$/"],
+      "matchStrings": [
+        "(?<depName>ghcr\\.io/gitleaks/gitleaks):(?<currentValue>[^\\s@]+)@(?<currentDigest>sha256:[a-f0-9]{64})"
+      ],
+      "datasourceTemplate": "docker"
+    }
+  ]
+}
