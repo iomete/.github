@@ -1,0 +1,18 @@
+# Repos the secret scan distributor leaves alone. Everything else in the org is
+# in scope, including repos created after this list was written.
+#
+# Only upstream forks belong here: their PR checks are upstream's, and adding a
+# workflow of ours to them creates a permanent merge conflict with the vendor.
+
+ansible-playbooks
+arrow-java
+datafusion-comet
+hive
+iceberg
+iom-spark
+spark
+starrocks
+starrocks-kubernetes-operator
+
+# This repo hosts the shared workflow and carries its own caller stub already.
+.github
