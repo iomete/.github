@@ -12,6 +12,7 @@ STUB_PATH="${STUB_PATH:-.github/workflows/common-pr-checks.yml}"
 MARKER="${MARKER:-common-repository-pr-checks.yml}"
 DRY_RUN="${DRY_RUN:-true}"
 REPOS="${REPOS:-}"
+LIST_LIMIT="${LIST_LIMIT:-1000}"
 
 : "${GH_TOKEN:?a GitHub App installation token is required}"
 
@@ -31,14 +32,25 @@ record() {
 }
 
 target_repos() {
+  local names
+
   if [[ -n "$REPOS" ]]; then
     tr ' ' '\n' <<<"$REPOS" | sed '/^$/d'
-    return
+    return 0
   fi
+
   # Discovery rather than an allowlist: a repo created next month is in scope
   # without anyone remembering to add it.
-  gh repo list iomete --limit 500 --no-archived --json name --jq '.[].name' |
-    grep -vxF -f <(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$skip_file")
+  names="$(gh repo list iomete --limit "$LIST_LIMIT" --no-archived --json name --jq '.[].name')" || return 1
+
+  # Refuse to run on a truncated listing: silently covering all but the last
+  # few repos is the one failure this script must not have.
+  if [[ "$(grep -c . <<<"$names")" -ge "$LIST_LIMIT" ]]; then
+    echo "Repo listing hit the $LIST_LIMIT cap; raise LIST_LIMIT so no repo is missed" >&2
+    return 1
+  fi
+
+  grep -vxF -f <(sed -e 's/#.*//' -e '/^[[:space:]]*$/d' "$skip_file") <<<"$names"
 }
 
 repo_url() {
@@ -77,6 +89,13 @@ process_repo() {
     return 0
   fi
 
+  # Something else already owns that filename. Leave it for a human rather than
+  # overwriting a workflow we know nothing about.
+  if [[ -e "$dir/$STUB_PATH" ]]; then
+    record "$repo" conflict
+    return 0
+  fi
+
   # Anything but an explicit "false" stays a dry run, so a mistyped value
   # cannot open PRs across the org.
   if [[ "$DRY_RUN" != "false" ]]; then
@@ -111,10 +130,15 @@ Opened automatically for ENG-8692. Comment here if this repo needs an exception.
   record "$repo" pr-opened
 }
 
+if ! target_repos >"$work/repos.txt"; then
+  echo "Could not determine which repositories to process" >&2
+  exit 1
+fi
+
 repos=()
 while IFS= read -r line; do
   [[ -n "$line" ]] && repos+=("$line")
-done < <(target_repos)
+done <"$work/repos.txt"
 
 if [[ "${#repos[@]}" -eq 0 ]]; then
   echo "No repositories to process" >&2

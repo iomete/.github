@@ -10,6 +10,9 @@ when it already carries the `chore/add-secret-scan` branch, or when it is listed
 in `skip-repos.txt`. So a rerun after a partial pass is safe, and an open PR is
 never duplicated.
 
+A repo reported as `conflict` already has a different workflow at the stub's
+filename. Nothing is overwritten; sort that repo out by hand.
+
 Distribute in batches with the `repos` input rather than opening every PR at
 once: each PR runs the scan, and the private repos share one self-hosted runner
 pool that already queues when busy.
