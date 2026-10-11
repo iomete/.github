@@ -58,7 +58,7 @@ jobs:
 
   pr-title:
     name: PR title
-    if: inputs.check-pr-title
+    if: inputs.check-pr-title && startsWith(github.event_name, 'pull_request')
     runs-on: ${{ inputs.runs-on }}
 
     steps:
@@ -68,7 +68,7 @@ jobs:
           TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?!?: [^ ]'
+          pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?!?: [^ ]|^Revert ".+"$'
 
           if [[ ! "$TITLE" =~ $pattern ]]; then
             echo "::error::PR title \"$TITLE\" must look like \"type(scope): summary\", for example \"ci: add a check\" or \"fix(PLA-123): handle empty input\". Allowed types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert."
