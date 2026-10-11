@@ -21,8 +21,6 @@ on:
 jobs:
   gitleaks:
     name: Secret scan
-    # A title edit changes no code, so there is nothing new to scan.
-    if: github.event.action != 'edited'
     runs-on: ${{ inputs.runs-on }}
 
     env:
