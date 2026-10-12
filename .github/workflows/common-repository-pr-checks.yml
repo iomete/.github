@@ -14,7 +14,7 @@ on:
         type: string
         default: ""
       check-pr-title:
-        description: Require a Conventional Commits PR title, such as "ci: add a check". Callers should also trigger on the edited event so a rename re-runs it.
+        description: 'Require a Conventional Commits PR title, such as "ci: add a check". Callers should also trigger on the edited event so a rename re-runs it.'
         type: boolean
         default: false
 
