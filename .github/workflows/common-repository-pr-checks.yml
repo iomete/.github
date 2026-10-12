@@ -13,6 +13,10 @@ on:
         description: Extra arguments for the secret scan, such as --config for a repo-specific allowlist.
         type: string
         default: ""
+      check-pr-title:
+        description: Require a Conventional Commits PR title, such as "ci: add a check". Callers should also trigger on the edited event so a rename re-runs it.
+        type: boolean
+        default: false
 
 jobs:
   gitleaks:
@@ -51,3 +55,22 @@ jobs:
             -v "$GITHUB_WORKSPACE:/repo:ro" \
             "$GITLEAKS_IMAGE" \
             git /repo --redact --verbose --no-banner --log-opts "$LOG_OPTS" $EXTRA_ARGS
+
+  pr-title:
+    name: PR title
+    if: inputs.check-pr-title && startsWith(github.event_name, 'pull_request')
+    runs-on: ${{ inputs.runs-on }}
+
+    steps:
+      # The squash commit takes the PR title, so it must follow Conventional Commits.
+      - name: Check PR title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          pattern='^(feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([^)]+\))?!?: [^ ]|^Revert ".+"$'
+
+          if [[ ! "$TITLE" =~ $pattern ]]; then
+            echo "::error::PR title \"$TITLE\" must look like \"type(scope): summary\", for example \"ci: add a check\" or \"fix(PLA-123): handle empty input\". Allowed types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert."
+            exit 1
+          fi
