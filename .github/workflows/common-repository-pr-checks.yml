@@ -81,10 +81,10 @@ jobs:
   # No permissions block here, since asking for more than the caller grants fails the whole run.
   copilot-review:
     name: Copilot review
-    # Only on open, reopen and ready for review, so new pushes do not trigger another review.
+    # Only on open and ready for review, so pushes and reopens do not pay for another review.
     if: >-
-      github.event_name == 'pull_request'
-      && contains(fromJSON('["opened", "reopened", "ready_for_review"]'), github.event.action)
+      startsWith(github.event_name, 'pull_request')
+      && contains(fromJSON('["opened", "ready_for_review"]'), github.event.action)
       && github.event.pull_request.user.type != 'Bot'
       && !github.event.pull_request.draft
     runs-on: ${{ inputs.runs-on }}
@@ -102,20 +102,23 @@ jobs:
         run: |
           set -euo pipefail
 
-          if ! result=$(gh api graphql -f query='mutation($pr:ID!,$bot:ID!){requestReviews(input:{
-            pullRequestId:$pr,botIds:[$bot],union:true}){pullRequest{reviewRequests(first:20){
-            nodes{requestedReviewer{... on Bot{login}}}}}}}' -f pr="$PR_ID" -f bot="$COPILOT_BOT_ID" 2>&1); then
-            if [[ "$result" == *"Resource not accessible by integration"* ]]; then
-              echo "::notice::Copilot review skipped for $PR: the token lacks pull-requests write"
+          if ! requested=$(gh api graphql -f query='mutation($pr:ID!,$bot:ID!){requestReviews(input:{
+            pullRequestId:$pr,botIds:[$bot],union:true}){pullRequest{reviewRequests(first:100){
+            nodes{requestedReviewer{... on Bot{login}}}}}}}' -f pr="$PR_ID" -f bot="$COPILOT_BOT_ID" \
+            --jq '[.data.requestReviews.pullRequest.reviewRequests.nodes[].requestedReviewer.login // ""
+              | select(test("^[Cc]opilot"))] | length' 2>/tmp/copilot-review.err); then
+            error=$(cat /tmp/copilot-review.err)
+
+            if [[ "$error" == *"Resource not accessible by integration"* ]]; then
+              echo "::notice::Copilot review skipped for $PR: the token lacks pull-requests write, or Copilot review is off for this repo"
             else
-              echo "::warning::Copilot review request failed for $PR: $result"
+              echo "::warning::Copilot review request failed for $PR: $error"
             fi
 
             exit 0
           fi
 
-          if ! jq -e '[.data.requestReviews.pullRequest.reviewRequests.nodes[].requestedReviewer.login // ""
-            | select(test("^[Cc]opilot"))] | length > 0' <<<"$result" >/dev/null; then
+          if [ "$requested" = 0 ]; then
             echo "::warning::Copilot review request did not register for $PR"
             exit 0
           fi
