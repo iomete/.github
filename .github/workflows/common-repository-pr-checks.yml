@@ -76,3 +76,51 @@ jobs:
             echo "::error::PR title \"$TITLE\" must look like \"type(scope): summary\", for example \"ci: add a check\" or \"fix(PLA-123): handle empty input\". Allowed types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert. An optional \"[iomete] \" prefix may precede the type."
             exit 1
           fi
+
+  # On for callers that grant pull-requests write; others skip with a notice.
+  # No permissions block here, since asking for more than the caller grants fails the whole run.
+  copilot-review:
+    name: Copilot review
+    # Only on open and ready for review, so pushes and reopens do not pay for another review.
+    if: >-
+      startsWith(github.event_name, 'pull_request')
+      && contains(fromJSON('["opened", "ready_for_review"]'), github.event.action)
+      && github.event.pull_request.user.type != 'Bot'
+      && !github.event.pull_request.draft
+    runs-on: ${{ inputs.runs-on }}
+
+    steps:
+      # REST requested_reviewers silently ignores Copilot, so request it through GraphQL.
+      # A failed request never fails the job, so a spent AI credits budget never blocks a PR.
+      - name: Request review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_ID: ${{ github.event.pull_request.node_id }}
+          PR: ${{ github.repository }}#${{ github.event.pull_request.number }}
+          # Node ID of the copilot-pull-request-reviewer bot, the same in every repo.
+          COPILOT_BOT_ID: BOT_kgDOCnlnWA
+        run: |
+          set -euo pipefail
+
+          if ! requested=$(gh api graphql -f query='mutation($pr:ID!,$bot:ID!){requestReviews(input:{
+            pullRequestId:$pr,botIds:[$bot],union:true}){pullRequest{reviewRequests(first:100){
+            nodes{requestedReviewer{... on Bot{login}}}}}}}' -f pr="$PR_ID" -f bot="$COPILOT_BOT_ID" \
+            --jq '[.data.requestReviews.pullRequest.reviewRequests.nodes[].requestedReviewer.login // ""
+              | select(test("^[Cc]opilot"))] | length' 2>/tmp/copilot-review.err); then
+            error=$(cat /tmp/copilot-review.err)
+
+            if [[ "$error" == *"Resource not accessible by integration"* ]]; then
+              echo "::notice::Copilot review skipped for $PR: the token lacks pull-requests write, or Copilot review is off for this repo"
+            else
+              echo "::warning::Copilot review request failed for $PR: $error"
+            fi
+
+            exit 0
+          fi
+
+          if [ "$requested" = 0 ]; then
+            echo "::warning::Copilot review request did not register for $PR"
+            exit 0
+          fi
+
+          echo "Copilot review requested for $PR"
