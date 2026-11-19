@@ -17,7 +17,9 @@ permissions:
 
 jobs:
   stale:
-    runs-on: ${{ inputs.runs-on }}
+    # A self-hosted runner name is sent as its group, so jobs can run on Azure or AWS runners.
+    # Names ending in -aws are AWS scale sets, not groups, so they stay labels.
+    runs-on: ${{ startsWith(inputs.runs-on, 'iomete-github-runners') && !endsWith(inputs.runs-on, '-aws') && fromJSON(format('{{"group":"{0}"}}', inputs.runs-on)) || inputs.runs-on }}
     steps:
       - uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0
         with:
