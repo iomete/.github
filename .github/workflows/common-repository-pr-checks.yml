@@ -22,7 +22,8 @@ jobs:
   gitleaks:
     name: Secret scan
     # A self-hosted runner name is sent as its group, so jobs can run on Azure or AWS runners.
-    runs-on: ${{ startsWith(inputs.runs-on, 'iomete-github-runners') && fromJSON(format('{{"group":"{0}"}}', inputs.runs-on)) || inputs.runs-on }}
+    # Names ending in -aws are AWS scale sets, not groups, so they stay labels.
+    runs-on: ${{ startsWith(inputs.runs-on, 'iomete-github-runners') && !endsWith(inputs.runs-on, '-aws') && fromJSON(format('{{"group":"{0}"}}', inputs.runs-on)) || inputs.runs-on }}
 
     env:
       # Digest-pinned so what runs cannot change under us. Renovate keeps it current.
@@ -61,7 +62,8 @@ jobs:
     name: PR title
     if: inputs.check-pr-title && startsWith(github.event_name, 'pull_request')
     # A self-hosted runner name is sent as its group, so jobs can run on Azure or AWS runners.
-    runs-on: ${{ startsWith(inputs.runs-on, 'iomete-github-runners') && fromJSON(format('{{"group":"{0}"}}', inputs.runs-on)) || inputs.runs-on }}
+    # Names ending in -aws are AWS scale sets, not groups, so they stay labels.
+    runs-on: ${{ startsWith(inputs.runs-on, 'iomete-github-runners') && !endsWith(inputs.runs-on, '-aws') && fromJSON(format('{{"group":"{0}"}}', inputs.runs-on)) || inputs.runs-on }}
 
     steps:
       # The squash commit takes the PR title, so it must follow Conventional Commits.
@@ -90,7 +92,8 @@ jobs:
       && github.event.pull_request.user.type != 'Bot'
       && !github.event.pull_request.draft
     # A self-hosted runner name is sent as its group, so jobs can run on Azure or AWS runners.
-    runs-on: ${{ startsWith(inputs.runs-on, 'iomete-github-runners') && fromJSON(format('{{"group":"{0}"}}', inputs.runs-on)) || inputs.runs-on }}
+    # Names ending in -aws are AWS scale sets, not groups, so they stay labels.
+    runs-on: ${{ startsWith(inputs.runs-on, 'iomete-github-runners') && !endsWith(inputs.runs-on, '-aws') && fromJSON(format('{{"group":"{0}"}}', inputs.runs-on)) || inputs.runs-on }}
 
     steps:
       # REST requested_reviewers silently ignores Copilot, so request it through GraphQL.
