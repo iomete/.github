@@ -1,0 +1,26 @@
+name: PR Slack announcer tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'actions/pr-slack-announcer/**'
+      - '.github/workflows/pr-slack-announcer-tests.yml'
+  pull_request:
+    paths:
+      - 'actions/pr-slack-announcer/**'
+      - '.github/workflows/pr-slack-announcer-tests.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: PR Slack announcer tests
+    # Stdlib only, so GitHub-hosted with no pip or container.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Test
+        run: python3 -m unittest discover -s actions/pr-slack-announcer/tests -v

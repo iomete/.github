@@ -1,0 +1,57 @@
+name: PR Slack announcer
+description: Announce a pull request in Slack, keep its message current, and remind reviewers about PRs left waiting
+inputs:
+  slack-token:
+    description: Slack bot token (chat:write, chat:write.customize, channels:history, reactions:write, users:read, users:read.email)
+    required: true
+  github-token:
+    description: Token that can read the repo's pull requests and reviews
+    required: true
+  channel:
+    description: Slack channel ID to post to
+    required: true
+  authors:
+    description: Comma-separated GitHub logins whose PRs are announced. Empty announces every human PR.
+    default: ''
+  opened-after:
+    description: Date (YYYY-MM-DD, UTC) or UTC timestamp (YYYY-MM-DDTHH:MM:SSZ). PRs opened before it are never posted, updated or reminded. Empty means no cutoff.
+    default: ''
+  dry-run:
+    description: "'true' reads GitHub and Slack and logs what it would do, but posts, edits and reacts to nothing"
+    default: 'false'
+  remind-after-hours:
+    description: Hours a PR must have been ready for review before its first reminder. It is then reminded again on each later weekday run
+    default: '24'
+  reminders-paused-until:
+    description: Date (YYYY-MM-DD, Asia/Ho_Chi_Minh). No reminders before that day. Empty means not paused.
+    default: ''
+  slack-users:
+    description: >
+      People the announcer can't match on its own, one `github-login=SLACKUSERID` or
+      `github-login=slack-email` per line. An input rather than a file in this public repo,
+      so the mapping of people to work emails stays out of it. Empty means no overrides.
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Announce
+      shell: bash
+      env:
+        SLACK_TOKEN: ${{ inputs.slack-token }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        SLACK_CHANNEL: ${{ inputs.channel }}
+        PR_AUTHORS: ${{ inputs.authors }}
+        OPENED_AFTER: ${{ inputs.opened-after }}
+        DRY_RUN: ${{ inputs.dry-run }}
+        REMIND_AFTER_HOURS: ${{ inputs.remind-after-hours }}
+        REMINDERS_PAUSED_UNTIL: ${{ inputs.reminders-paused-until }}
+        SLACK_USERS: ${{ inputs.slack-users }}
+        SLACK_TEAMS_FILE: ${{ github.action_path }}/slack-teams.txt
+        EXCLUDED_AUTHORS_FILE: ${{ github.action_path }}/excluded-authors.txt
+      run: |
+        if [ -n "$SLACK_USERS" ]; then
+          export SLACK_USERS_FILE="$RUNNER_TEMP/pr-slack-announcer-users.txt"
+          printf '%s\n' "$SLACK_USERS" > "$SLACK_USERS_FILE"
+        fi
+        python3 "$GITHUB_ACTION_PATH/pr_slack_announcer.py"

@@ -1,0 +1,76 @@
+name: PR Slack announcer
+
+# Reusable workflow: posts each human PR to Slack once it is ready for review, keeps the message
+# current, deletes it when the PR goes back to draft or is closed unmerged, adds ✅ while it is
+# approved, and replies in the thread when the daily run finds it waiting for review.
+# See actions/pr-slack-announcer/README.md for the behaviour and how a repo turns it on.
+#
+# The public copy of iomete/infra's announcer, so public repos can call it too. The script is
+# kept identical to infra's; only the person-to-Slack overrides differ (an org variable here,
+# rather than a file).
+on:
+  workflow_call:
+    inputs:
+      channel:
+        description: Slack channel ID to post to. The default is #pr-reviews.
+        type: string
+        default: C086FBCBUHG
+      authors:
+        description: Comma-separated GitHub logins whose PRs are announced. Empty announces every human PR.
+        type: string
+        default: ''
+      opened-after:
+        description: Date (YYYY-MM-DD, UTC) or UTC timestamp (YYYY-MM-DDTHH:MM:SSZ). PRs opened before it are never posted, updated or reminded, so turning this on doesn't post the backlog. Empty means no cutoff.
+        type: string
+        default: ''
+      remind-after-hours:
+        description: Hours a PR must have been ready for review before its first reminder, less a 2h grace for the run's timing. It is then reminded again on each later weekday run.
+        type: number
+        default: 24
+      runs-on:
+        description: Runner for the job. Public repos must pass ubuntu-latest, the self-hosted runners are private-repo only.
+        type: string
+        default: iomete-github-runners-spot
+    secrets:
+      SLACK_NOTIFY_BOT_TOKEN:
+        description: Token of the Slack app that posts the messages.
+        required: false
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  announce:
+    name: PR Slack announcer
+    # Bot PRs approve and merge themselves, so they are never announced. PRs from forks get no
+    # secrets, so they are skipped rather than failing on a missing token.
+    if: >-
+      github.event.pull_request.user.type != 'Bot' &&
+      (!github.event.pull_request || github.event.pull_request.head.repo.full_name == github.repository)
+    # A self-hosted runner name is sent as its group, so jobs can run on Azure or AWS runners.
+    # Names ending in -aws are AWS scale sets, not groups, so they stay labels.
+    runs-on: ${{ startsWith(inputs.runs-on, 'iomete-github-runners') && !endsWith(inputs.runs-on, '-aws') && fromJSON(format('{{"group":"{0}"}}', inputs.runs-on)) || inputs.runs-on }}
+    timeout-minutes: 10
+    # One run per PR at a time. A queued run replacing another is fine: each reads the PR as it is now.
+    concurrency:
+      group: pr-slack-announcer-${{ github.repository }}-${{ github.event.pull_request.number || 'sweep' }}
+
+    steps:
+      - uses: iomete/.github/actions/pr-slack-announcer@main
+        with:
+          slack-token: ${{ secrets.SLACK_NOTIFY_BOT_TOKEN }}
+          github-token: ${{ github.token }}
+          channel: ${{ inputs.channel }}
+          authors: ${{ inputs.authors }}
+          opened-after: ${{ inputs.opened-after }}
+          # Kill switch: set the PR_SLACK_ANNOUNCER_DRY_RUN variable to 'true' on the repo, or the org
+          # to stop every repo, and runs log what they would do without touching Slack.
+          dry-run: ${{ vars.PR_SLACK_ANNOUNCER_DRY_RUN || 'false' }}
+          remind-after-hours: ${{ inputs.remind-after-hours }}
+          # Set PR_SLACK_ANNOUNCER_REMINDERS_PAUSED_UNTIL (YYYY-MM-DD) on the org or repo to skip
+          # reminders until that day, e.g. while the team is on-site. Announcements keep running.
+          reminders-paused-until: ${{ vars.PR_SLACK_ANNOUNCER_REMINDERS_PAUSED_UNTIL || '' }}
+          # github-login=SLACKUSERID or github-login=email, one per line, for people the announcer
+          # can't match by their GitHub email or name.
+          slack-users: ${{ vars.PR_SLACK_ANNOUNCER_SLACK_USERS || '' }}

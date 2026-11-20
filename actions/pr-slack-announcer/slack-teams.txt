@@ -1,0 +1,4 @@
+# GitHub team = member logins. A review request for a listed team mentions its members in Slack.
+# Teams not listed are shown by name only. Teams with GitHub auto-assignment stay out of this file,
+# since their assigned members are requested and mentioned by name.
+# Keep in step with the team's members on GitHub.

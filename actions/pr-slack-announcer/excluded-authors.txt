@@ -1,0 +1,2 @@
+# GitHub logins whose PRs are never announced, one per line.
+fmusayev
