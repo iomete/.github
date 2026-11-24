@@ -18,6 +18,18 @@ on:
         type: boolean
         default: true
 
+      image-platforms:
+        description: Platforms every base image in a changed Dockerfile must ship, comma-separated. Pass an empty string to skip the check.
+        type: string
+        default: linux/amd64,linux/arm64
+    secrets:
+      DOCKERHUB_USERNAME:
+        description: Optional Docker Hub login for the base image check. Without it, Docker Hub's anonymous rate limit can turn the check into a warning.
+        required: false
+      DOCKERHUB_TOKEN:
+        description: Token for DOCKERHUB_USERNAME.
+        required: false
+
 jobs:
   gitleaks:
     name: Secret scan
@@ -80,6 +92,354 @@ jobs:
             echo "::error::PR title \"$TITLE\" must look like \"type(scope): summary\", for example \"ci: add a check\" or \"fix(PLA-123): handle empty input\". Allowed types: feat, fix, docs, style, refactor, perf, test, build, ci, chore, revert. An optional \"[iomete] \" prefix may precede the type."
             exit 1
           fi
+
+  # Fails when a changed Dockerfile pulls an image that is missing or not published for every
+  # platform, so a broken Renovate bump never automerges.
+  base-images:
+    name: Base image platforms
+    if: inputs.image-platforms != ''
+    # A self-hosted runner name is sent as its group, so jobs can run on Azure or AWS runners.
+    # Names ending in -aws are AWS scale sets, not groups, so they stay labels.
+    runs-on: ${{ startsWith(inputs.runs-on, 'iomete-github-runners') && !endsWith(inputs.runs-on, '-aws') && fromJSON(format('{{"group":"{0}"}}', inputs.runs-on)) || inputs.runs-on }}
+
+    steps:
+      # Depth 2 on the PR merge commit brings in its first parent, the base branch.
+      - name: Checkout Code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 2
+
+      - name: Check base images
+        env:
+          PLATFORMS: ${{ inputs.image-platforms }}
+          EVENT_NAME: ${{ github.event_name }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/check_base_images.py" <<'PY'
+          import base64
+          import json
+          import os
+          import re
+          import sys
+          import time
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          ARG_REF = re.compile(r"\$(?:\{(\w+)(?::?([-+])([^}]*))?\}|(\w+))")
+          HEREDOC = re.compile(r"(?:^|\s)<<-?[\"']?([A-Za-z_]\w*)[\"']?")
+          MANIFEST_TYPES = ", ".join([
+              "application/vnd.oci.image.index.v1+json",
+              "application/vnd.docker.distribution.manifest.list.v2+json",
+              "application/vnd.oci.image.manifest.v1+json",
+              "application/vnd.docker.distribution.manifest.v2+json",
+          ])
+
+
+          def is_dockerfile(path):
+              name = os.path.basename(path).lower()
+              return name == "dockerfile" or name.startswith("dockerfile.") or name.endswith(".dockerfile")
+
+
+          def logical_lines(text):
+              # Joins continuation lines and skips RUN heredoc bodies, so neither hides or fakes a FROM.
+              lines = text.splitlines()
+              index = 0
+
+              while index < len(lines):
+                  start = index + 1
+                  line = lines[index]
+                  index += 1
+
+                  if not line.strip() or line.lstrip().startswith("#"):
+                      continue
+
+                  # Docker drops comment and blank lines inside a continuation and keeps joining.
+                  while line.rstrip().endswith("\\") and index < len(lines):
+                      line = line.rstrip()[:-1]
+
+                      while index < len(lines) and (not lines[index].strip() or lines[index].lstrip().startswith("#")):
+                          index += 1
+
+                      if index < len(lines):
+                          line += " " + lines[index].strip()
+                          index += 1
+
+                  keyword = line.split(None, 1)[0].upper()
+                  terminators = HEREDOC.findall(line) if keyword in ("RUN", "COPY", "ADD") else []
+
+                  for terminator in terminators:
+                      end = next((i for i in range(index, len(lines)) if lines[i].strip() == terminator), None)
+
+                      # A missing terminator means this was not a heredoc, so keep reading.
+                      if end is not None:
+                          index = end + 1
+
+                  yield start, line.strip()
+
+
+          def expand(value, args):
+              def replace(match):
+                  name = match.group(1) or match.group(4)
+                  operator, word = match.group(2), match.group(3)
+                  current = args.get(name)
+
+                  if operator == "-":
+                      return current if current else word
+
+                  if operator == "+":
+                      return word if current else ""
+
+                  return current if current is not None else match.group(0)
+
+              return ARG_REF.sub(replace, value)
+
+
+          def parse_args(rest, args):
+              for token in rest.split():
+                  name, _, value = token.partition("=")
+
+                  if name not in args:
+                      args[name] = expand(value.strip("\"'"), args) if value else None
+
+
+          def base_images(text):
+              # Yields (line, image, platform) for every external image a Dockerfile pulls.
+              global_args = {}
+              stages = set()
+              seen_from = False
+
+              for line, instruction in logical_lines(text):
+                  keyword, rest = (instruction.split(None, 1) + [""])[:2]
+                  keyword = keyword.upper()
+
+                  if keyword == "ARG" and not seen_from:
+                      parse_args(rest, global_args)
+                      continue
+
+                  if keyword == "FROM":
+                      seen_from = True
+                      tokens = rest.split()
+                      flags = [token for token in tokens if token.startswith("--")]
+                      words = [token for token in tokens if not token.startswith("--")]
+                      platform = next((flag.split("=", 1)[1] for flag in flags if flag.startswith("--platform=")), None)
+                      image = expand(words[0], global_args) if words else ""
+
+                      # Checked before this stage's own name is added, so FROM ubuntu AS ubuntu still counts.
+                      if image.lower() != "scratch" and image.lower() not in stages:
+                          yield line, image, platform
+
+                      if len(words) >= 3 and words[1].lower() == "as":
+                          stages.add(words[2].lower())
+
+                      continue
+
+                  if keyword in ("COPY", "RUN"):
+                      for token in rest.split():
+                          if token.startswith("--from="):
+                              source = token.split("=", 1)[1]
+                          elif token.startswith("--mount="):
+                              source = next((part[5:] for part in token[8:].split(",") if part.startswith("from=")), None)
+                          else:
+                              continue
+
+                          if source and source.lower() not in stages and not source.isdigit():
+                              yield line, expand(source, global_args), None
+
+
+          class Inconclusive(Exception):
+              pass
+
+
+          class NotFound(Exception):
+              pass
+
+
+          def split_reference(image):
+              name, _, digest = image.partition("@")
+              first = name.split("/", 1)[0]
+              last = name.rsplit("/", 1)[-1]
+              tag = last.split(":", 1)[1] if ":" in last else "latest"
+              name = name[: len(name) - len(tag) - 1] if ":" in last else name
+
+              if "/" in name and ("." in first or ":" in first or first == "localhost"):
+                  registry, repository = name.split("/", 1)
+              else:
+                  registry, repository = "docker.io", name
+
+              if registry == "docker.io":
+                  registry = "registry-1.docker.io"
+                  repository = repository if "/" in repository else f"library/{repository}"
+
+              return registry, repository, digest or tag
+
+
+          def bearer_token(challenge, registry):
+              fields = dict(re.findall(r'(\w+)="([^"]*)"', challenge))
+              query = urllib.parse.urlencode({key: fields[key] for key in ("service", "scope") if key in fields})
+              request = urllib.request.Request(f"{fields['realm']}?{query}")
+              username, token = os.environ.get("DOCKERHUB_USERNAME"), os.environ.get("DOCKERHUB_TOKEN")
+
+              # Docker Hub credentials only ever go to Docker Hub's own token service.
+              if username and token and registry == "registry-1.docker.io" and fields["realm"].startswith("https://auth.docker.io/"):
+                  login = base64.b64encode(f"{username}:{token}".encode()).decode()
+                  request.add_unredirected_header("Authorization", f"Basic {login}")
+
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  data = json.load(response)
+
+              return data.get("token") or data.get("access_token")
+
+
+          def fetch(registry, repository, path, accept, tokens):
+              # Tokens are scoped to one repository, so they are cached per repository.
+              url = f"https://{registry}/v2/{repository}/{path}"
+              key = f"{registry}/{repository}"
+
+              for attempt in range(3):
+                  request = urllib.request.Request(url, headers={"Accept": accept})
+
+                  # Unredirected, so the token is not sent on to a blob storage redirect.
+                  if key in tokens:
+                      request.add_unredirected_header("Authorization", f"Bearer {tokens[key]}")
+
+                  try:
+                      with urllib.request.urlopen(request, timeout=30) as response:
+                          return json.load(response)
+                  except urllib.error.HTTPError as error:
+                      challenge = error.headers.get("WWW-Authenticate", "")
+
+                      if error.code == 401 and challenge.lower().startswith("bearer") and key not in tokens:
+                          try:
+                              tokens[key] = bearer_token(challenge, registry)
+                          except (urllib.error.URLError, OSError, ValueError, KeyError) as token_error:
+                              raise Inconclusive(f"no registry token ({token_error})")
+
+                          continue
+
+                      if error.code == 404:
+                          raise NotFound("not found in the registry")
+
+                      if error.code in (401, 403, 429):
+                          raise Inconclusive(f"HTTP {error.code}, a login or a higher rate limit is needed")
+
+                      reason = f"HTTP {error.code}"
+                  except (urllib.error.URLError, OSError, ValueError) as error:
+                      reason = str(error)
+
+                  if attempt < 2:
+                      time.sleep(5 * (attempt + 1))
+
+              raise Inconclusive(reason)
+
+
+          def platforms_of(image, tokens):
+              registry, repository, reference = split_reference(image)
+              manifest = fetch(registry, repository, f"manifests/{reference}", MANIFEST_TYPES, tokens)
+
+              if "manifests" in manifest:
+                  entries = [entry.get("platform") or {} for entry in manifest["manifests"]]
+              else:
+                  config = manifest.get("config", {}).get("digest")
+                  entries = [fetch(registry, repository, f"blobs/{config}", "*/*", tokens)] if config else []
+
+              return [
+                  (entry.get("os"), entry.get("architecture"), entry.get("variant"))
+                  for entry in entries
+                  if entry.get("os") and entry.get("os") != "unknown"
+              ]
+
+
+          def has_platform(platforms, wanted):
+              os_name, _, rest = wanted.partition("/")
+              arch, _, variant = rest.partition("/")
+
+              return any(
+                  found_os == os_name and found_arch == arch and (not variant or found_variant == variant)
+                  for found_os, found_arch, found_variant in platforms
+              )
+
+
+          def wanted_platforms(platform, required, platforms):
+              if platform and "$" not in platform:
+                  return [platform]
+
+              if platform and "BUILDPLATFORM" in platform:
+                  return []
+
+              # A Windows-only image belongs to a Windows build, so only Linux images get the Linux list.
+              systems = {found_os for found_os, _, _ in platforms}
+
+              return [want for want in required if want.split("/", 1)[0] in systems]
+
+
+          def annotate(level, path, line, message):
+              print(f"::{level} file={path},line={line}::{message}", flush=True)
+
+
+          def main():
+              required = [platform.strip() for platform in os.environ["PLATFORMS"].split(",") if platform.strip()]
+              # Paths come NUL-separated on stdin, straight from git -z.
+              paths = [path for path in sys.stdin.read().split("\0") if is_dockerfile(path) and os.path.isfile(path)]
+              failures = 0
+              tokens = {}
+              cache = {}
+
+              if not paths:
+                  print("No Dockerfile changes")
+                  return 0
+
+              for path in paths:
+                  with open(path, encoding="utf-8", errors="replace") as handle:
+                      text = handle.read()
+
+                  for line, image, platform in base_images(text):
+                      if "$" in image:
+                          annotate("warning", path, line, f"Skipped {image}: it depends on a build argument with no default")
+                          continue
+
+                      if image not in cache:
+                          try:
+                              cache[image] = platforms_of(image, tokens)
+                          except (NotFound, Inconclusive) as error:
+                              cache[image] = error
+
+                      result = cache[image]
+
+                      if isinstance(result, NotFound):
+                          annotate("error", path, line, f"{image} cannot be pulled: {result}")
+                          failures += 1
+                          continue
+
+                      if isinstance(result, Inconclusive):
+                          annotate("warning", path, line, f"Could not check {image}: {result}")
+                          continue
+
+                      missing = [want for want in wanted_platforms(platform, required, result) if not has_platform(result, want)]
+
+                      if not result or missing:
+                          found = ", ".join("/".join(filter(None, item)) for item in result) or "none"
+                          annotate("error", path, line, f"{image} has no image for {', '.join(missing) or 'any platform'} (has: {found})")
+                          failures += 1
+                      else:
+                          print(f"{path}:{line} {image} ok", flush=True)
+
+              return 1 if failures else 0
+
+
+          if __name__ == "__main__":
+              sys.exit(main())
+          PY
+
+          # Only a pull_request checkout is the PR merge commit, so other events have nothing to diff.
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "Skipping on $EVENT_NAME, the check only runs on pull requests"
+            exit 0
+          fi
+
+          git diff -z --name-only --diff-filter=d HEAD^1 HEAD | python3 -I "$RUNNER_TEMP/check_base_images.py"
 
   # On for callers that grant pull-requests write; others skip with a notice.
   # No permissions block here, since asking for more than the caller grants fails the whole run.
