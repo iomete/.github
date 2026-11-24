@@ -212,7 +212,7 @@ jobs:
               seen_from = False
 
               for line, instruction in logical_lines(text):
-                  keyword, _, rest = instruction.partition(" ")
+                  keyword, rest = (instruction.split(None, 1) + [""])[:2]
                   keyword = keyword.upper()
 
                   if keyword == "ARG" and not seen_from:
@@ -227,11 +227,12 @@ jobs:
                       platform = next((flag.split("=", 1)[1] for flag in flags if flag.startswith("--platform=")), None)
                       image = expand(words[0], global_args) if words else ""
 
-                      if len(words) >= 3 and words[1].lower() == "as":
-                          stages.add(words[2].lower())
-
+                      # Checked before this stage's own name is added, so FROM ubuntu AS ubuntu still counts.
                       if image.lower() != "scratch" and image.lower() not in stages:
                           yield line, image, platform
+
+                      if len(words) >= 3 and words[1].lower() == "as":
+                          stages.add(words[2].lower())
 
                       continue
 
