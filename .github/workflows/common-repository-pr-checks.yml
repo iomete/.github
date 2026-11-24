@@ -156,13 +156,16 @@ jobs:
                   if not line.strip() or line.lstrip().startswith("#"):
                       continue
 
+                  # Docker drops comment and blank lines inside a continuation and keeps joining.
                   while line.rstrip().endswith("\\") and index < len(lines):
                       line = line.rstrip()[:-1]
-                      next_line = lines[index]
-                      index += 1
 
-                      if not next_line.lstrip().startswith("#"):
-                          line += " " + next_line.strip()
+                      while index < len(lines) and (not lines[index].strip() or lines[index].lstrip().startswith("#")):
+                          index += 1
+
+                      if index < len(lines):
+                          line += " " + lines[index].strip()
+                          index += 1
 
                   keyword = line.split(None, 1)[0].upper()
                   terminators = HEREDOC.findall(line) if keyword in ("RUN", "COPY", "ADD") else []
@@ -199,7 +202,7 @@ jobs:
                   name, _, value = token.partition("=")
 
                   if name not in args:
-                      args[name] = value.strip("\"'") if value else None
+                      args[name] = expand(value.strip("\"'"), args) if value else None
 
 
           def base_images(text):
@@ -232,13 +235,17 @@ jobs:
 
                       continue
 
-                  if keyword == "COPY":
+                  if keyword in ("COPY", "RUN"):
                       for token in rest.split():
                           if token.startswith("--from="):
                               source = token.split("=", 1)[1]
+                          elif token.startswith("--mount="):
+                              source = next((part[5:] for part in token[8:].split(",") if part.startswith("from=")), None)
+                          else:
+                              continue
 
-                              if source.lower() not in stages and not source.isdigit():
-                                  yield line, source, None
+                          if source and source.lower() not in stages and not source.isdigit():
+                              yield line, expand(source, global_args), None
 
 
           class Inconclusive(Exception):
@@ -321,7 +328,8 @@ jobs:
                   except (urllib.error.URLError, OSError, ValueError) as error:
                       reason = str(error)
 
-                  time.sleep(5 * (attempt + 1))
+                  if attempt < 2:
+                      time.sleep(5 * (attempt + 1))
 
               raise Inconclusive(reason)
 
@@ -424,11 +432,13 @@ jobs:
               sys.exit(main())
           PY
 
-          if [[ "$EVENT_NAME" == pull_request* ]]; then
-            git diff -z --name-only --diff-filter=d HEAD^1 HEAD | python3 -I "$RUNNER_TEMP/check_base_images.py"
-          else
-            git ls-files -z | python3 -I "$RUNNER_TEMP/check_base_images.py"
+          # Only a pull_request checkout is the PR merge commit, so other events have nothing to diff.
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "Skipping on $EVENT_NAME, the check only runs on pull requests"
+            exit 0
           fi
+
+          git diff -z --name-only --diff-filter=d HEAD^1 HEAD | python3 -I "$RUNNER_TEMP/check_base_images.py"
 
   # On for callers that grant pull-requests write; others skip with a notice.
   # No permissions block here, since asking for more than the caller grants fails the whole run.
